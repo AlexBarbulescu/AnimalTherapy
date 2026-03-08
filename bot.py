@@ -15,6 +15,8 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PROJECT_DOCS = os.getenv("PROJECT_DOCS", "")
@@ -30,17 +32,26 @@ POLLING_RECONNECT_DELAY = max(1, int(os.getenv("POLLING_RECONNECT_DELAY", "5")))
 client = AsyncGroq(api_key=GROQ_API_KEY)
 polling_recovery_task: asyncio.Task | None = None
 
+
+def get_project_docs_path() -> str:
+    if not PROJECT_DOCS_FILE:
+        return ""
+    if os.path.isabs(PROJECT_DOCS_FILE):
+        return PROJECT_DOCS_FILE
+    return os.path.join(BASE_DIR, PROJECT_DOCS_FILE)
+
 def get_project_docs() -> str:
-    if PROJECT_DOCS_FILE:
+    project_docs_path = get_project_docs_path()
+    if project_docs_path:
         try:
-            with open(PROJECT_DOCS_FILE, "r", encoding="utf-8") as docs_file:
+            with open(project_docs_path, "r", encoding="utf-8") as docs_file:
                 docs = docs_file.read().strip()
             if docs:
                 return docs
         except FileNotFoundError:
-            logger.info("Project docs file %s not found; falling back to PROJECT_DOCS env var.", PROJECT_DOCS_FILE)
+            logger.info("Project docs file %s not found; falling back to PROJECT_DOCS env var.", project_docs_path)
         except Exception as exc:
-            logger.warning("Failed to read project docs file %s: %s", PROJECT_DOCS_FILE, exc)
+            logger.warning("Failed to read project docs file %s: %s", project_docs_path, exc)
 
     return PROJECT_DOCS.strip()
 
