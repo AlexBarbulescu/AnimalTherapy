@@ -273,15 +273,29 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
         join_message_ids[chat_id].append(message.message_id)
 
 async def auto_delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Helper to delete the user's command message if config is enabled."""
-    if bot_config["autodelete_commands"] and update.message and update.effective_chat:
+    """Helper to auto-delete a user's command message when enabled or sent by an admin."""
+    if update.message is None or update.effective_chat is None:
+        return
+
+    should_delete = bot_config["autodelete_commands"] or is_admin(update.effective_user)
+    if not should_delete:
+        return
+
+    delay = 5 if is_admin(update.effective_user) else 0
+
+    async def _delete() -> None:
         try:
-            await context.bot.delete_message(
+            if delay > 0:
+                await asyncio.sleep(delay)
+            await delete_message_with_retry(
+                context,
                 chat_id=update.effective_chat.id,
-                message_id=update.message.message_id
+                message_id=update.message.message_id,
             )
         except Exception as e:
             logger.debug("Failed to auto-delete command message: %s", e)
+
+    asyncio.create_task(_delete())
 
 def schedule_delete_response(message, delay=15) -> None:
     """Helper to automatically delete a bot's response message after a delay."""
