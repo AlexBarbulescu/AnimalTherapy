@@ -2,7 +2,8 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -12,14 +13,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PROJECT_DOCS = os.getenv("PROJECT_DOCS", "")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    system_instruction=f"""You are a helpful assistant for Animal AI, a crypto project focused on DeFi and animal charity.
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+SYSTEM_PROMPT = f"""You are a helpful assistant for Animal AI, a crypto project focused on DeFi and animal charity.
 Use this documentation: {PROJECT_DOCS}
 
 Be concise and helpful."""
-)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -41,7 +40,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         
-        response = model.generate_content(user_message)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+            ),
+            contents=user_message
+        )
         answer = response.text
         await update.message.reply_text(answer)
     except Exception as e:
