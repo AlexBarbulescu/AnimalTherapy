@@ -3,6 +3,7 @@ import re
 import asyncio
 import json
 import logging
+import time
 from dotenv import load_dotenv
 from groq import AsyncGroq
 from telegram import Update
@@ -23,8 +24,10 @@ PORT = int(os.getenv("PORT", "8080"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 RAILWAY_STATIC_URL = os.getenv("RAILWAY_STATIC_URL", "").strip()
 RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+POLLING_RECONNECT_DELAY = max(1, int(os.getenv("POLLING_RECONNECT_DELAY", "5")))
 
 client = AsyncGroq(api_key=GROQ_API_KEY)
+polling_recovery_task: asyncio.Task | None = None
 
 SYSTEM_PROMPT = f"""You are the official assistant for Animal AI.
 
@@ -100,15 +103,51 @@ def get_webhook_base_url() -> str:
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global polling_recovery_task
     error = context.error
     if isinstance(error, Conflict):
         logger.error(
             "Telegram polling conflict: another bot instance is already using this token. "
-            "Stop the local bot or any duplicate Railway deployment, and ensure only one replica is running."
+            "Attempting to disconnect any stale session and reconnect this bot."
         )
+        if polling_recovery_task is None or polling_recovery_task.done():
+            polling_recovery_task = asyncio.create_task(recover_polling_conflict(context.application))
         return
 
     logger.exception("Unhandled Telegram error", exc_info=error)
+
+
+async def recover_polling_conflict(application: Application) -> None:
+    updater = application.updater
+    if updater is None:
+        logger.error("Cannot recover Telegram polling conflict because no updater is configured.")
+        return
+
+    while True:
+        try:
+            if updater.running:
+                logger.info("Stopping current polling session before reconnecting.")
+                await updater.stop()
+
+            try:
+                await application.bot.delete_webhook(drop_pending_updates=False)
+            except BadRequest as exc:
+                logger.debug("No webhook needed clearing before polling reconnect: %s", exc)
+
+            logger.info("Retrying Telegram polling in %ss.", POLLING_RECONNECT_DELAY)
+            await asyncio.sleep(POLLING_RECONNECT_DELAY)
+            await updater.start_polling(drop_pending_updates=False)
+            logger.info("Telegram polling reconnected successfully after conflict.")
+            return
+        except Conflict:
+            logger.warning(
+                "Telegram polling is still locked by another active session. Retrying in %ss.",
+                POLLING_RECONNECT_DELAY,
+            )
+            await asyncio.sleep(POLLING_RECONNECT_DELAY)
+        except Exception as exc:
+            logger.exception("Failed to recover Telegram polling after conflict: %s", exc)
+            return
 
 # --- Admin Functionality ---
 join_message_ids = {}
@@ -382,31 +421,45 @@ async def purge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         schedule_delete_response(status_msg, delay=10)
 
-    deleted_count = 0
-    failed_attempts = 0
-    current_message_id = update.message.message_id - 1
+    deleted_recent_count = 0
+    skipped_message_count = 0
+    command_message_id = update.message.message_id
+    current_message_id = command_message_id - 1
+    max_scan_count = max(delete_target * 10, delete_target + 25)
 
-    while current_message_id > 0 and deleted_count < delete_target and failed_attempts < delete_target:
+    while current_message_id > 0 and deleted_recent_count < delete_target and skipped_message_count < max_scan_count:
         try:
             deleted = await delete_message_with_retry(context, chat_id=chat_id, message_id=current_message_id)
             if deleted:
-                deleted_count += 1
-                failed_attempts = 0
+                deleted_recent_count += 1
             else:
-                failed_attempts += 1
+                skipped_message_count += 1
         except Exception as e:
             logger.warning("Failed to purge message %s in chat %s: %s", current_message_id, chat_id, e)
-            failed_attempts += 1
+            skipped_message_count += 1
         current_message_id -= 1
 
+    command_deleted = False
     try:
-        await delete_message_with_retry(context, chat_id=chat_id, message_id=update.message.message_id)
+        command_deleted = await delete_message_with_retry(context, chat_id=chat_id, message_id=command_message_id)
     except Exception as e:
         logger.debug("Failed to delete purge command message: %s", e)
 
+    if deleted_recent_count == delete_target:
+        status_text = (
+            f"✅ Purged {deleted_recent_count} recent message(s)"
+            f"{', plus the purge command.' if command_deleted else '.'}"
+        )
+    else:
+        status_text = (
+            f"⚠️ Purged {deleted_recent_count} of {delete_target} requested recent message(s)"
+            f" after scanning {deleted_recent_count + skipped_message_count} earlier message ID(s)"
+            f"{', plus the purge command.' if command_deleted else '.'}"
+        )
+
     reply = await context.bot.send_message(
         chat_id=chat_id,
-        text=f"✅ Purged {deleted_count} recent message(s).",
+        text=status_text,
     )
     schedule_delete_response(reply, delay=5)
 # --------------------------------------
@@ -587,6 +640,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text("Sorry, error occurred. Try again.")
 
 async def post_init(application: Application) -> None:
+    if not get_webhook_base_url():
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Cleared Telegram webhook before starting polling.")
+        except BadRequest as e:
+            logger.debug("Webhook cleanup skipped before polling: %s", e)
+        except Exception as e:
+            logger.warning("Failed to clear webhook before polling: %s", e)
+
     if POST_STARTUP_MESSAGE and GROUP_CHAT_ID:
         try:
             await application.bot.send_message(
@@ -604,16 +666,7 @@ async def post_init(application: Application) -> None:
         except Exception as e:
             logger.error(f"Failed to post startup message: {e}")
 
-def main() -> None:
-    if not TELEGRAM_TOKEN:
-        raise RuntimeError("Missing TELEGRAM_TOKEN in environment.")
-    if not GROQ_API_KEY:
-        raise RuntimeError("Missing GROQ_API_KEY in environment.")
-
-    # Load persistent config
-    load_config()
-
-    webhook_base_url = get_webhook_base_url()
+def build_application() -> Application:
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.post_init = post_init
     application.add_error_handler(error_handler)
@@ -626,6 +679,19 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_chat_members))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.PRIVATE | filters.ChatType.GROUPS), handle_message))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    return application
+
+
+def main() -> None:
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("Missing TELEGRAM_TOKEN in environment.")
+    if not GROQ_API_KEY:
+        raise RuntimeError("Missing GROQ_API_KEY in environment.")
+
+    load_config()
+
+    webhook_base_url = get_webhook_base_url()
+    application = build_application()
 
     if webhook_base_url:
         webhook_path = TELEGRAM_TOKEN
@@ -641,7 +707,20 @@ def main() -> None:
         return
 
     logger.info("Starting Animal AI Bot in polling mode...")
-    application.run_polling(drop_pending_updates=True)
+    startup_attempt = 1
+    while True:
+        try:
+            application.run_polling(drop_pending_updates=True)
+            return
+        except Conflict:
+            logger.warning(
+                "Telegram polling conflict during startup attempt %s. Retrying in %ss.",
+                startup_attempt,
+                POLLING_RECONNECT_DELAY,
+            )
+            time.sleep(POLLING_RECONNECT_DELAY)
+            startup_attempt += 1
+            application = build_application()
 
 if __name__ == "__main__":
     main()
