@@ -802,9 +802,8 @@ def main() -> None:
     load_config()
 
     webhook_base_url = get_webhook_base_url()
-    application = build_application()
-
     if webhook_base_url:
+        application = build_application()
         webhook_path = TELEGRAM_TOKEN
         logger.info("Starting Animal AI Bot in webhook mode on port %s", PORT)
         logger.info("Webhook URL: %s/%s", webhook_base_url, webhook_path)
@@ -820,18 +819,33 @@ def main() -> None:
     logger.info("Starting Animal AI Bot in polling mode...")
     startup_attempt = 1
     while True:
+        application = build_application()
         try:
-            application.run_polling(drop_pending_updates=True)
-            return
-        except Conflict:
+            application.run_polling(drop_pending_updates=True, close_loop=False)
             logger.warning(
-                "Telegram polling conflict during startup attempt %s. Retrying in %ss.",
+                "Telegram polling stopped unexpectedly during attempt %s. Retrying in %ss.",
                 startup_attempt,
                 POLLING_RECONNECT_DELAY,
             )
+        except Conflict:
+            logger.warning(
+                "Telegram polling conflict during attempt %s. This usually means another bot instance is running. Retrying in %ss.",
+                startup_attempt,
+                POLLING_RECONNECT_DELAY,
+            )
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Bot shutdown requested. Exiting polling loop.")
+            return
+        except Exception as exc:
+            logger.exception(
+                "Telegram polling crashed during attempt %s. Retrying in %ss. Error: %s",
+                startup_attempt,
+                POLLING_RECONNECT_DELAY,
+                exc,
+            )
+
             time.sleep(POLLING_RECONNECT_DELAY)
             startup_attempt += 1
-            application = build_application()
 
 if __name__ == "__main__":
     main()
