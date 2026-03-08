@@ -18,6 +18,10 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PROJECT_DOCS = os.getenv("PROJECT_DOCS", "")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 POST_STARTUP_MESSAGE = os.getenv("POST_STARTUP_MESSAGE", "false").lower() in {"1", "true", "yes", "on"}
+PORT = int(os.getenv("PORT", "8080"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+RAILWAY_STATIC_URL = os.getenv("RAILWAY_STATIC_URL", "").strip()
+RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
 
 client = AsyncGroq(api_key=GROQ_API_KEY)
 
@@ -82,6 +86,16 @@ def build_unknown_answer(user_message: str) -> str:
     if question_requests_quantitative_info(user_message):
         return "I don't have verified figures for that in the provided project docs, so I don't want to guess."
     return "I don't have verified information about that in the provided project docs."
+
+
+def get_webhook_base_url() -> str:
+    if WEBHOOK_URL:
+        return WEBHOOK_URL.rstrip("/")
+    if RAILWAY_STATIC_URL:
+        return RAILWAY_STATIC_URL.rstrip("/")
+    if RAILWAY_PUBLIC_DOMAIN:
+        return f"https://{RAILWAY_PUBLIC_DOMAIN}".rstrip("/")
+    return ""
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -219,6 +233,7 @@ def main() -> None:
     if not GROQ_API_KEY:
         raise RuntimeError("Missing GROQ_API_KEY in environment.")
 
+    webhook_base_url = get_webhook_base_url()
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.post_init = post_init
     application.add_error_handler(error_handler)
@@ -226,8 +241,21 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.PRIVATE | filters.ChatType.GROUPS), handle_message))
-    
-    logger.info("Starting Animal AI Bot...")
+
+    if webhook_base_url:
+        webhook_path = TELEGRAM_TOKEN
+        logger.info("Starting Animal AI Bot in webhook mode on port %s", PORT)
+        logger.info("Webhook URL: %s/%s", webhook_base_url, webhook_path)
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=webhook_path,
+            webhook_url=f"{webhook_base_url}/{webhook_path}",
+            drop_pending_updates=True,
+        )
+        return
+
+    logger.info("Starting Animal AI Bot in polling mode...")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
