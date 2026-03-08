@@ -1,3 +1,14 @@
 {
-    "autodelete_commands": false
+    "autodelete_commands": false,
+    "admins": [
+        "ScottLEOwarrior",
+        "Alex_TNT"
+    ],
+    "allowed_chat_ids": [
+        "3775096487",
+        "5128831555"
+    ],
+    "allowed_chat_usernames": [
+        "secretsecret6"
+    ]
 }

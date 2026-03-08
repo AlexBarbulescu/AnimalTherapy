@@ -111,16 +111,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.exception("Unhandled Telegram error", exc_info=error)
 
 # --- Admin Functionality ---
-ADMINS = {"ScottLEOwarrior", "Alex_TNT"}
-ALLOWED_CHAT_IDS = {"3775096487", "5128831555"}
-ALLOWED_CHAT_USERNAMES = {"secretsecret6"}
 join_message_ids = {}
 
 CONFIG_FILE = "bot_config.json"
 
-bot_config = {
-    "autodelete_commands": False
-}
+bot_config = {}
 
 def load_config() -> None:
     global bot_config
@@ -132,6 +127,13 @@ def load_config() -> None:
         except Exception as e:
             logger.error("Failed to load config: %s", e)
     else:
+        # Create a generic default config if the file is missing
+        bot_config = {
+            "autodelete_commands": False,
+            "admins": [],
+            "allowed_chat_ids": [],
+            "allowed_chat_usernames": []
+        }
         save_config()
 
 def save_config() -> None:
@@ -142,22 +144,22 @@ def save_config() -> None:
         logger.error("Failed to save config: %s", e)
 
 def is_admin(user) -> bool:
-    return user is not None and user.username in ADMINS
+    return user is not None and user.username in bot_config.get("admins", [])
 
 def is_allowed_chat(chat) -> bool:
     if not chat:
         return False
     # Always allow admins to interact in private or anywhere
-    if chat.type == "private" and chat.username in ADMINS:
+    if chat.type == "private" and chat.username in bot_config.get("admins", []):
         return True
     
     # Check if chat username matches allowed usernames
-    if chat.username and chat.username.lower() in ALLOWED_CHAT_USERNAMES:
+    if chat.username and chat.username.lower() in [u.lower() for u in bot_config.get("allowed_chat_usernames", [])]:
         return True
         
     # Check if chat ID string ends with any allowed ID (handles -100 prefix for supergroups)
     chat_id_str = str(chat.id)
-    for allowed_id in ALLOWED_CHAT_IDS:
+    for allowed_id in bot_config.get("allowed_chat_ids", []):
         if chat_id_str.endswith(allowed_id):
             return True
             
@@ -252,11 +254,56 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text = (
         "🛠 <b>Admin Commands:</b>\n\n"
         "/clean_joins - Delete tracked 'joined the group' messages\n"
+        "/purge_joins [limit] - Scan recent history for missing join messages\n"
         "/config - View or change bot settings\n"
         "/admin - Show this list of admin commands"
     )
     reply = await update.message.reply_text(text, parse_mode="HTML")
     schedule_delete_response(reply)
+
+# --- Historical Purge Functionality ---
+async def purge_joins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None or not is_allowed_chat(update.effective_chat):
+        return
+
+    await auto_delete_command(update, context)
+
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ You are not authorized to use this command.")
+        return
+
+    chat_id = update.effective_chat.id
+    
+    # Check if a limit was provided
+    limit = 50
+    if context.args:
+        try:
+            limit = int(context.args[0])
+            if limit > 200:
+                limit = 200 # Telegram API limits
+        except ValueError:
+            reply = await update.message.reply_text("⚠️ Please provide a valid number for the limit (e.g., /purge_joins 50)")
+            schedule_delete_response(reply)
+            return
+
+    status_msg = await update.message.reply_text(f"⏳ Scanning the last {limit} messages for 'joined the group' events...")
+
+    # Telegram Bots CANNOT use a simple 'get_history' method like user clients can.
+    # We must scan by trying to delete service messages heuristically, or inform the user.
+    # Since python-telegram-bot doesn't have a direct `get_chat_history` for standard bots:
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=status_msg.message_id,
+        text=(
+            "⚠️ **Telegram API Limitation:**\n"
+            "Telegram Bots cannot read past chat history. I can only delete messages "
+            "that I have seen since I woke up.\n\n"
+            "Please use `/clean_joins` to delete the ones I have tracked so far."
+        ),
+        parse_mode="Markdown"
+    )
+    schedule_delete_response(status_msg, delay=20)
+# --------------------------------------
 
 async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None or not is_allowed_chat(update.effective_chat):
@@ -468,6 +515,7 @@ def main() -> None:
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("config", config_command))
     application.add_handler(CommandHandler("clean_joins", clean_joins_command))
+    application.add_handler(CommandHandler("purge_joins", purge_joins_command))
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_chat_members))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.PRIVATE | filters.ChatType.GROUPS), handle_message))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
