@@ -1,0 +1,36 @@
+Animal AI Project Knowledge Base
+===============================
+
+Project name:
+Animal AI
+
+Overview:
+Project Guardian & Community Bot. Welcome to the heart of the Animal AI ecosystem. This project combines decentralized finance with real-world compassion, where every trade helps a paw.
+
+Mission:
+Our mission is simple: Decentralized Finance meets Real-World Compassion.
+
+Purpose:
+The project is designed to facilitate a seamless experience for investors who believe profit and philanthropy should go hand-in-hand.
+
+Project owner:
+https://x.com/ScottLEOWarrior
+
+Charity model:
+A dedicated percentage of the project’s revenue is automatically funneled toward verified animal shelter charities globally.
+
+Key features:
+- Live Impact Tracker: Real-time updates on total donations sent to shelters.
+- Price & Chart Alerts: Market movement updates with precision.
+- Transparency Portal: Direct links to donation transaction hashes and charity receipts.
+- Community Governance: Polls that allow the community to vote on which shelters to support next.
+- Security First: Access to smart contract audits and liquidity lock details.
+
+Why the project is different:
+While other tokens chase hype, Animal AI focuses on real change. Holding the token is described as helping provide food, medical care, and forever homes to animals in need.
+
+Brand message:
+"Small trades, big barks, and even bigger hearts."
+
+Notes:
+- If a fact is not written here, the bot should avoid claiming it as verified.
