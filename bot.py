@@ -115,25 +115,67 @@ join_message_ids = {}
 
 CONFIG_FILE = "bot_config.json"
 
-bot_config = {}
+DEFAULT_BOT_CONFIG = {
+    "autodelete_commands": False,
+    "admins": ["ScottLEOwarrior", "Alex_TNT"],
+    "allowed_chat_ids": ["3775096487", "5128831555"],
+    "allowed_chat_usernames": ["secretsecret6"],
+}
+
+bot_config = DEFAULT_BOT_CONFIG.copy()
+
+
+def _normalize_username_list(values) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        username = str(value).strip()
+        if username:
+            normalized.append(username.lower())
+    return normalized
+
+
+def _normalize_chat_id_list(values) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    for value in values:
+        chat_id = str(value).strip()
+        if chat_id:
+            normalized.append(chat_id)
+    return normalized
+
+
+def _merge_config(raw_config: object) -> dict:
+    merged = DEFAULT_BOT_CONFIG.copy()
+    if not isinstance(raw_config, dict):
+        return merged
+
+    merged["autodelete_commands"] = bool(raw_config.get("autodelete_commands", False))
+    merged["admins"] = _normalize_username_list(raw_config.get("admins", DEFAULT_BOT_CONFIG["admins"]))
+    merged["allowed_chat_ids"] = _normalize_chat_id_list(raw_config.get("allowed_chat_ids", DEFAULT_BOT_CONFIG["allowed_chat_ids"]))
+    merged["allowed_chat_usernames"] = _normalize_username_list(raw_config.get("allowed_chat_usernames", DEFAULT_BOT_CONFIG["allowed_chat_usernames"]))
+    return merged
 
 def load_config() -> None:
     global bot_config
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
-                bot_config.update(json.load(f))
+                loaded_config = json.load(f)
+            bot_config = _merge_config(loaded_config)
             logger.info("Loaded config from %s", CONFIG_FILE)
+
+            if loaded_config != bot_config:
+                save_config()
+                logger.info("Updated %s with any missing default settings", CONFIG_FILE)
         except Exception as e:
             logger.error("Failed to load config: %s", e)
     else:
-        # Create a generic default config if the file is missing
-        bot_config = {
-            "autodelete_commands": False,
-            "admins": [],
-            "allowed_chat_ids": [],
-            "allowed_chat_usernames": []
-        }
+        bot_config = DEFAULT_BOT_CONFIG.copy()
         save_config()
 
 def save_config() -> None:
@@ -144,17 +186,17 @@ def save_config() -> None:
         logger.error("Failed to save config: %s", e)
 
 def is_admin(user) -> bool:
-    return user is not None and user.username in bot_config.get("admins", [])
+    return user is not None and bool(user.username) and user.username.lower() in bot_config.get("admins", [])
 
 def is_allowed_chat(chat) -> bool:
     if not chat:
         return False
     # Always allow admins to interact in private or anywhere
-    if chat.type == "private" and chat.username in bot_config.get("admins", []):
+    if chat.type == "private" and chat.username and chat.username.lower() in bot_config.get("admins", []):
         return True
     
     # Check if chat username matches allowed usernames
-    if chat.username and chat.username.lower() in [u.lower() for u in bot_config.get("allowed_chat_usernames", [])]:
+    if chat.username and chat.username.lower() in bot_config.get("allowed_chat_usernames", []):
         return True
         
     # Check if chat ID string ends with any allowed ID (handles -100 prefix for supergroups)
