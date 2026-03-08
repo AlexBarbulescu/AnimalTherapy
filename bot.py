@@ -157,7 +157,7 @@ MAX_PURGE_MESSAGES = 100
 
 DEFAULT_BOT_CONFIG = {
     "autodelete_commands": False,
-    "admins": ["ScottLEOwarrior", "Alex_TNT"],
+    "admins": ["scottleowarrior", "alex_tnt"],
     "allowed_chat_ids": ["3775096487", "5128831555"],
     "allowed_chat_usernames": ["secretsecret6"],
 }
