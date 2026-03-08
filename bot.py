@@ -109,6 +109,73 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
     logger.exception("Unhandled Telegram error", exc_info=error)
 
+# --- Admin Functionality ---
+ADMINS = {"ScottLEOwarrior", "Alex_TNT"}
+join_message_ids = {}
+
+def is_admin(user) -> bool:
+    return user is not None and user.username in ADMINS
+
+async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if message and update.effective_chat:
+        chat_id = update.effective_chat.id
+        if chat_id not in join_message_ids:
+            join_message_ids[chat_id] = []
+        join_message_ids[chat_id].append(message.message_id)
+
+async def clean_joins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ You are not authorized to use this command.")
+        return
+
+    chat_id = update.effective_chat.id
+    if chat_id not in join_message_ids or not join_message_ids[chat_id]:
+        await update.message.reply_text("No recent 'joined the group' messages tracked to delete.")
+        return
+
+    deleted_count = 0
+    # Copy the list and clear the original
+    msgs_to_delete = join_message_ids[chat_id][:]
+    join_message_ids[chat_id].clear()
+
+    for msg_id in msgs_to_delete:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            deleted_count += 1
+        except Exception as e:
+            logger.warning("Could not delete message %s: %s", msg_id, e)
+            
+    reply = await update.message.reply_text(f"✅ Deleted {deleted_count} 'joined the group' messages.")
+    
+    # Clean up the command and confirmation message after a short delay
+    try:
+        await asyncio.sleep(3)
+        await context.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
+        await context.bot.delete_message(chat_id=chat_id, message_id=reply.message_id)
+    except Exception:
+        pass
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+
+    if not is_admin(update.effective_user):
+        await update.message.reply_text("⛔ You are not authorized to use this command.")
+        return
+
+    text = (
+        "🛠 **Admin Commands:**\n\n"
+        "/clean_joins - Delete tracked 'joined the group' messages\n"
+        "/admin - Show this list of admin commands"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# ---------------------------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
@@ -124,11 +191,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.message is None:
         return
 
-    await update.message.reply_text(
+    text = (
         "Ask me questions about Animal AI!\n\n"
         "/start - Welcome\n"
         "/help - This message"
     )
+    if is_admin(update.effective_user):
+        text += "\n\n🛠 Admin Commands:\n/clean_joins - Delete tracked 'joined the group' messages"
+        
+    await update.message.reply_text(text)
 
 BOT_USERNAME = "@AnimalTherapyAi_Bot"
 BOT_USERNAME_PATTERN = re.compile(r"@AnimalTherapyAi_Bot", re.IGNORECASE)
@@ -237,9 +308,11 @@ def main() -> None:
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.post_init = post_init
     application.add_error_handler(error_handler)
-    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("clean_joins", clean_joins_command))
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_chat_members))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.PRIVATE | filters.ChatType.GROUPS), handle_message))
 
     if webhook_base_url:
