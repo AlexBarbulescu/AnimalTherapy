@@ -19,10 +19,67 @@ GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
 client = AsyncGroq(api_key=GROQ_API_KEY)
 
-SYSTEM_PROMPT = f"""You are a helpful assistant for Animal AI, a crypto project focused on DeFi and animal charity.
-Use this documentation: {PROJECT_DOCS}
+SYSTEM_PROMPT = f"""You are the official assistant for Animal AI.
 
-Be concise and helpful."""
+You must answer using ONLY the verified information contained in the project documentation below.
+
+Rules:
+- Never invent stats, metrics, prices, dates, roadmap items, partnerships, exchange listings, donation totals, user counts, adoption counts, or technical details.
+- If the documentation does not explicitly contain the answer, say that you do not have verified information in the provided docs.
+- Do not imply you checked a live tracker, database, dashboard, API, or internal source unless that capability is explicitly described in the docs.
+- Do not estimate, guess, or fill in missing details.
+- If asked for numbers and the docs do not contain exact numbers, clearly say that no verified figures were provided.
+- Keep answers concise, factual, and grounded in the docs.
+
+Project documentation:
+{PROJECT_DOCS}
+"""
+
+NUMBER_PATTERN = re.compile(r"\b\d[\d,\.]*\b")
+QUANTITATIVE_KEYWORDS = (
+    "how much",
+    "how many",
+    "total",
+    "raised",
+    "donation",
+    "donations",
+    "tracker",
+    "price",
+    "market cap",
+    "volume",
+    "holders",
+    "users",
+    "shelters",
+    "meals",
+    "treatments",
+    "adopted",
+    "stats",
+    "statistics",
+    "metrics",
+    "numbers",
+    "amount",
+)
+
+
+def question_requests_quantitative_info(user_message: str) -> bool:
+    lowered = user_message.lower()
+    return any(keyword in lowered for keyword in QUANTITATIVE_KEYWORDS)
+
+
+def extract_numeric_tokens(text: str) -> set[str]:
+    return {match.group(0) for match in NUMBER_PATTERN.finditer(text)}
+
+
+def has_unverified_numeric_claims(answer: str) -> bool:
+    documented_numbers = extract_numeric_tokens(PROJECT_DOCS)
+    answer_numbers = extract_numeric_tokens(answer)
+    return any(number not in documented_numbers for number in answer_numbers)
+
+
+def build_unknown_answer(user_message: str) -> str:
+    if question_requests_quantitative_info(user_message):
+        return "I don't have verified figures for that in the provided project docs, so I don't want to guess."
+    return "I don't have verified information about that in the provided project docs."
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
@@ -56,10 +113,16 @@ async def generate_llm_reply(user_message: str) -> str:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
-        temperature=0.7,
+        temperature=0.2,
         max_tokens=500,
     )
-    return completion.choices[0].message.content or "Sorry, I couldn't generate a reply just now."
+    answer = completion.choices[0].message.content or "Sorry, I couldn't generate a reply just now."
+
+    if question_requests_quantitative_info(user_message) and has_unverified_numeric_claims(answer):
+        logger.warning("Blocked response with unverified numeric claims: %r", answer)
+        return build_unknown_answer(user_message)
+
+    return answer
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
@@ -81,6 +144,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
     else:
         user_message = text
+
+    if not PROJECT_DOCS.strip():
+        await message.reply_text("⚠️ No project documentation is configured for me yet.")
+        return
 
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
