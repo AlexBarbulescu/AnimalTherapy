@@ -111,12 +111,36 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- Admin Functionality ---
 ADMINS = {"ScottLEOwarrior", "Alex_TNT"}
+ALLOWED_CHAT_IDS = {"3775096487", "5128831555"}
+ALLOWED_CHAT_USERNAMES = {"secretsecret6"}
 join_message_ids = {}
 
 def is_admin(user) -> bool:
     return user is not None and user.username in ADMINS
 
+def is_allowed_chat(chat) -> bool:
+    if not chat:
+        return False
+    # Always allow admins to interact in private or anywhere
+    if chat.type == "private" and chat.username in ADMINS:
+        return True
+    
+    # Check if chat username matches allowed usernames
+    if chat.username and chat.username.lower() in ALLOWED_CHAT_USERNAMES:
+        return True
+        
+    # Check if chat ID string ends with any allowed ID (handles -100 prefix for supergroups)
+    chat_id_str = str(chat.id)
+    for allowed_id in ALLOWED_CHAT_IDS:
+        if chat_id_str.endswith(allowed_id):
+            return True
+            
+    return False
+
 async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_allowed_chat(update.effective_chat):
+        return
+
     message = update.message
     if message and update.effective_chat:
         chat_id = update.effective_chat.id
@@ -125,7 +149,7 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
         join_message_ids[chat_id].append(message.message_id)
 
 async def clean_joins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message is None or update.effective_user is None:
+    if update.message is None or update.effective_user is None or not is_allowed_chat(update.effective_chat):
         return
 
     if not is_admin(update.effective_user):
@@ -160,7 +184,7 @@ async def clean_joins_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         pass
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message is None or update.effective_user is None:
+    if update.message is None or update.effective_user is None or not is_allowed_chat(update.effective_chat):
         return
 
     if not is_admin(update.effective_user):
@@ -177,7 +201,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # ---------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message is None:
+    if update.message is None or not is_allowed_chat(update.effective_chat):
         return
 
     await update.message.reply_text(
@@ -188,7 +212,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message is None:
+    if update.message is None or not is_allowed_chat(update.effective_chat):
         return
 
     text = (
@@ -225,7 +249,7 @@ async def generate_llm_reply(user_message: str) -> str:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
-    if message is None or update.effective_chat is None:
+    if message is None or update.effective_chat is None or not is_allowed_chat(update.effective_chat):
         return
 
     chat_type = message.chat.type  # 'private', 'group', 'supergroup', 'channel'
