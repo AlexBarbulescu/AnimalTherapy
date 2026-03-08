@@ -6,7 +6,7 @@ import logging
 from dotenv import load_dotenv
 from groq import AsyncGroq
 from telegram import Update
-from telegram.error import BadRequest, Conflict
+from telegram.error import BadRequest, Conflict, RetryAfter
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 load_dotenv()
@@ -112,6 +112,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- Admin Functionality ---
 join_message_ids = {}
+MAX_PURGE_MESSAGES = 100
+DELETE_MESSAGE_MAX_AGE_SECONDS = 48 * 60 * 60
 
 CONFIG_FILE = "bot_config.json"
 
@@ -283,6 +285,103 @@ async def clean_joins_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         pass
 
+
+def parse_purge_limit(args: list[str], default: int = 10) -> tuple[int | None, str | None]:
+    if not args:
+        return default, None
+
+    try:
+        requested_limit = int(args[0])
+    except ValueError:
+        return None, f"⚠️ Please provide a valid number between 1 and {MAX_PURGE_MESSAGES}. Example: /purge 10"
+
+    if requested_limit < 1:
+        return None, "⚠️ Purge count must be at least 1."
+
+    if requested_limit > MAX_PURGE_MESSAGES:
+        return MAX_PURGE_MESSAGES, (
+            f"⚠️ Telegram rate limits are strict, so I'll cap purge requests at {MAX_PURGE_MESSAGES} messages."
+        )
+
+    return requested_limit, None
+
+
+async def purge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None or update.effective_chat is None or not is_allowed_chat(update.effective_chat):
+        return
+
+    if not is_admin(update.effective_user):
+        await auto_delete_command(update, context)
+        await update.message.reply_text("⛔ You are not authorized to use this command.")
+        return
+
+    if update.effective_chat.type not in ("group", "supergroup"):
+        await update.message.reply_text("⚠️ `/purge` only works in groups and supergroups.", parse_mode="Markdown")
+        return
+
+    purge_count, parse_message = parse_purge_limit(context.args)
+    if purge_count is None:
+        reply = await update.message.reply_text(parse_message)
+        schedule_delete_response(reply)
+        return
+
+    status_message = None
+    if parse_message:
+        status_message = await update.message.reply_text(parse_message)
+
+    cutoff_timestamp = update.message.date.timestamp() - DELETE_MESSAGE_MAX_AGE_SECONDS
+    command_message_id = update.message.message_id
+    deleted_count = 0
+    attempted_count = 0
+    chat_id = update.effective_chat.id
+
+    oldest_message_id = max(command_message_id - purge_count, 1)
+
+    for message_id in range(command_message_id, oldest_message_id - 1, -1):
+        attempted_count += 1
+        estimated_message_timestamp = update.message.date.timestamp() - (command_message_id - message_id)
+        if estimated_message_timestamp < cutoff_timestamp:
+            logger.info("Stopping purge at message_id=%s because it is estimated to be older than Telegram's deletion window.", message_id)
+            break
+
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            deleted_count += 1
+        except RetryAfter as e:
+            wait_seconds = max(int(getattr(e, "retry_after", 1)), 1)
+            logger.warning("Telegram rate-limited purge for %ss; waiting before continuing.", wait_seconds)
+            await asyncio.sleep(wait_seconds)
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                deleted_count += 1
+            except Exception as retry_error:
+                logger.debug("Could not delete message %s after rate-limit retry: %s", message_id, retry_error)
+        except BadRequest as e:
+            logger.debug("Could not delete message %s: %s", message_id, e)
+        except Exception as e:
+            logger.warning("Unexpected purge error for message %s: %s", message_id, e)
+
+        if attempted_count % 25 == 0:
+            await asyncio.sleep(1)
+
+    summary = f"✅ Purge complete. Deleted {deleted_count} message(s)."
+    if deleted_count < purge_count:
+        summary += " Some messages may have been too old, missing, or not deletable by the bot."
+
+    if status_message is not None:
+        try:
+            await status_message.edit_text(summary)
+            schedule_delete_response(status_message, delay=10)
+            return
+        except Exception:
+            pass
+
+    try:
+        reply = await context.bot.send_message(chat_id=chat_id, text=summary)
+        schedule_delete_response(reply, delay=10)
+    except Exception as e:
+        logger.debug("Failed to send purge summary: %s", e)
+
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None or not is_allowed_chat(update.effective_chat):
         return
@@ -296,56 +395,12 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text = (
         "🛠 <b>Admin Commands:</b>\n\n"
         "/clean_joins - Delete tracked 'joined the group' messages\n"
-        "/purge_joins [limit] - Scan recent history for missing join messages\n"
+        "/purge [count] - Delete the purge command plus [count] previous messages (max 100)\n"
         "/config - View or change bot settings\n"
         "/admin - Show this list of admin commands"
     )
     reply = await update.message.reply_text(text, parse_mode="HTML")
     schedule_delete_response(reply)
-
-# --- Historical Purge Functionality ---
-async def purge_joins_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message is None or update.effective_user is None or not is_allowed_chat(update.effective_chat):
-        return
-
-    await auto_delete_command(update, context)
-
-    if not is_admin(update.effective_user):
-        await update.message.reply_text("⛔ You are not authorized to use this command.")
-        return
-
-    chat_id = update.effective_chat.id
-    
-    # Check if a limit was provided
-    limit = 50
-    if context.args:
-        try:
-            limit = int(context.args[0])
-            if limit > 200:
-                limit = 200 # Telegram API limits
-        except ValueError:
-            reply = await update.message.reply_text("⚠️ Please provide a valid number for the limit (e.g., /purge_joins 50)")
-            schedule_delete_response(reply)
-            return
-
-    status_msg = await update.message.reply_text(f"⏳ Scanning the last {limit} messages for 'joined the group' events...")
-
-    # Telegram Bots CANNOT use a simple 'get_history' method like user clients can.
-    # We must scan by trying to delete service messages heuristically, or inform the user.
-    # Since python-telegram-bot doesn't have a direct `get_chat_history` for standard bots:
-    await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=status_msg.message_id,
-        text=(
-            "⚠️ **Telegram API Limitation:**\n"
-            "Telegram Bots cannot read past chat history. I can only delete messages "
-            "that I have seen since I woke up.\n\n"
-            "Please use `/clean_joins` to delete the ones I have tracked so far."
-        ),
-        parse_mode="Markdown"
-    )
-    schedule_delete_response(status_msg, delay=20)
-# --------------------------------------
 
 async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None or not is_allowed_chat(update.effective_chat):
@@ -423,7 +478,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/help - This message"
     )
     if is_admin(update.effective_user):
-        text += "\n\n🛠 Admin Commands:\n/clean_joins - Delete tracked 'joined the group' messages"
+        text += "\n\n🛠 Admin Commands:\n/clean_joins - Delete tracked 'joined the group' messages\n/purge [count] - Delete the purge command plus previous messages"
         
     reply = await update.message.reply_text(text)
     schedule_delete_response(reply)
@@ -557,7 +612,7 @@ def main() -> None:
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("config", config_command))
     application.add_handler(CommandHandler("clean_joins", clean_joins_command))
-    application.add_handler(CommandHandler("purge_joins", purge_joins_command))
+    application.add_handler(CommandHandler("purge", purge_command))
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_chat_members))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.PRIVATE | filters.ChatType.GROUPS), handle_message))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
