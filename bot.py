@@ -185,6 +185,7 @@ MAX_PURGE_MESSAGES = 100
 
 DEFAULT_BOT_CONFIG = {
     "autodelete_commands": False,
+    "autodelete_join_messages": False,
     "admins": ["scottleowarrior", "alex_tnt"],
     "allowed_chat_ids": ["3775096487", "5128831555"],
     "allowed_chat_usernames": ["secretsecret6"],
@@ -223,6 +224,7 @@ def _merge_config(raw_config: object) -> dict:
         return merged
 
     merged["autodelete_commands"] = bool(raw_config.get("autodelete_commands", False))
+    merged["autodelete_join_messages"] = bool(raw_config.get("autodelete_join_messages", False))
     merged["admins"] = _normalize_username_list(raw_config.get("admins", DEFAULT_BOT_CONFIG["admins"]))
     merged["allowed_chat_ids"] = _normalize_chat_id_list(raw_config.get("allowed_chat_ids", DEFAULT_BOT_CONFIG["allowed_chat_ids"]))
     merged["allowed_chat_usernames"] = _normalize_username_list(raw_config.get("allowed_chat_usernames", DEFAULT_BOT_CONFIG["allowed_chat_usernames"]))
@@ -296,6 +298,12 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
     message = update.message
     if message and update.effective_chat:
         chat_id = update.effective_chat.id
+        if bot_config.get("autodelete_join_messages"):
+            deleted = await delete_message_with_retry(context, chat_id=chat_id, message_id=message.message_id)
+            if not deleted:
+                logger.debug("Join message %s in chat %s could not be auto-deleted.", message.message_id, chat_id)
+            return
+
         if chat_id not in join_message_ids:
             join_message_ids[chat_id] = []
         join_message_ids[chat_id].append(message.message_id)
@@ -519,13 +527,17 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     args = context.args
     if not args:
-        state = "ON" if bot_config["autodelete_commands"] else "OFF"
+        command_state = "ON" if bot_config["autodelete_commands"] else "OFF"
+        join_message_state = "ON" if bot_config.get("autodelete_join_messages") else "OFF"
         text = (
             "⚙️ <b>Bot Configuration</b>\n\n"
-            f"• <code>autodelete</code>: <b>{state}</b>\n\n"
+            f"• <code>autodelete</code>: <b>{command_state}</b>\n"
+            f"• <code>join_cleanup</code>: <b>{join_message_state}</b>\n\n"
             "<i>To change a setting, use:</i>\n"
             "<code>/config [setting] [true/false]</code>\n"
-            "<i>Example:</i> <code>/config autodelete true</code>"
+            "<i>Examples:</i>\n"
+            "<code>/config autodelete true</code>\n"
+            "<code>/config join_cleanup true</code>"
         )
         reply = await update.message.reply_text(text, parse_mode="HTML")
         schedule_delete_response(reply)
@@ -551,6 +563,33 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             reply = await update.message.reply_text("Invalid value. Use `true` or `false`.", parse_mode="Markdown")
         schedule_delete_response(reply)
+    elif setting in {"join_cleanup", "clean_joins", "autodelete_join_messages", "join_messages"}:
+        if len(args) < 2:
+            reply = await update.message.reply_text(
+                "Please specify true or false. Example: `/config join_cleanup true`",
+                parse_mode="Markdown",
+            )
+            schedule_delete_response(reply)
+            return
+
+        value_str = args[1].lower()
+        if value_str in ["true", "on", "yes", "1"]:
+            bot_config["autodelete_join_messages"] = True
+            save_config()
+            reply = await update.message.reply_text(
+                "✅ Auto-delete for 'joined the group' messages is now **ON**.",
+                parse_mode="Markdown",
+            )
+        elif value_str in ["false", "off", "no", "0"]:
+            bot_config["autodelete_join_messages"] = False
+            save_config()
+            reply = await update.message.reply_text(
+                "✅ Auto-delete for 'joined the group' messages is now **OFF**.",
+                parse_mode="Markdown",
+            )
+        else:
+            reply = await update.message.reply_text("Invalid value. Use `true` or `false`.", parse_mode="Markdown")
+        schedule_delete_response(reply)
     else:
         reply = await update.message.reply_text(f"Unknown setting: `{setting}`", parse_mode="Markdown")
         schedule_delete_response(reply)
@@ -566,7 +605,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply = await update.message.reply_text(
         "🐾 Welcome to Animal AI!\n\n"
         "I'm your dedicated guide to the Animal AI ecosystem where every trade helps a paw. 🐕\n\n"
-        "Ask me anything about our mission, features, donations, and more!\n\n"
+        "Ask me anything about:\n"
+        "• Our mission & values\n"
+        "• Key features (Impact Tracker, Price Alerts, etc.)\n"
+        "• How donations work\n"
+        "• Community governance\n"
+        "• Smart contract security\n\n"
         "Small trades, big barks, and even bigger hearts. ❤️"
     )
     schedule_delete_response(reply)
@@ -583,7 +627,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/help - This message"
     )
     if is_admin(update.effective_user):
-        text += f"\n\n🛠 Admin Commands:\n/clean_joins - Delete tracked 'joined the group' messages\n/purge [count] - Delete up to {MAX_PURGE_MESSAGES} recent messages"
+        text += (
+            f"\n\n🛠 Admin Commands:\n"
+            "/clean_joins - Delete tracked 'joined the group' messages\n"
+            f"/purge [count] - Delete up to {MAX_PURGE_MESSAGES} recent messages\n"
+            "/config join_cleanup true|false - Toggle auto-deletion of join messages"
+        )
         
     reply = await update.message.reply_text(text)
     schedule_delete_response(reply)

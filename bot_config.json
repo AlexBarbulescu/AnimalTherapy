@@ -1,5 +1,6 @@
 {
     "autodelete_commands": false,
+    "autodelete_join_messages": false,
     "admins": [
         "ScottLEOwarrior",
         "Alex_TNT"
