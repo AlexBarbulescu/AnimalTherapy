@@ -300,6 +300,8 @@ async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
         chat_id = update.effective_chat.id
         if bot_config.get("autodelete_join_messages"):
             deleted = await delete_message_with_retry(context, chat_id=chat_id, message_id=message.message_id)
+            if deleted:
+                logger.info("Auto-deleted join message %s in chat %s.", message.message_id, chat_id)
             if not deleted:
                 logger.debug("Join message %s in chat %s could not be auto-deleted.", message.message_id, chat_id)
             return
@@ -533,11 +535,13 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "⚙️ <b>Bot Configuration</b>\n\n"
             f"• <code>autodelete</code>: <b>{command_state}</b>\n"
             f"• <code>join_cleanup</code>: <b>{join_message_state}</b>\n\n"
-            "<i>To change a setting, use:</i>\n"
-            "<code>/config [setting] [true/false]</code>\n"
+            "<i>To change or check a setting, use:</i>\n"
+            "<code>/config [setting] [true/false|status]</code>\n"
             "<i>Examples:</i>\n"
             "<code>/config autodelete true</code>\n"
-            "<code>/config join_cleanup true</code>"
+            "<code>/config autodelete status</code>\n"
+            "<code>/config join_cleanup true</code>\n"
+            "<code>/config join_cleanup status</code>"
         )
         reply = await update.message.reply_text(text, parse_mode="HTML")
         schedule_delete_response(reply)
@@ -547,12 +551,21 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if setting == "autodelete" or setting == "autodelete_commands":
         if len(args) < 2:
-            reply = await update.message.reply_text("Please specify true or false. Example: `/config autodelete true`", parse_mode="Markdown")
+            reply = await update.message.reply_text(
+                "Please specify `true`, `false`, or `status`. Example: `/config autodelete status`",
+                parse_mode="Markdown",
+            )
             schedule_delete_response(reply)
             return
             
         value_str = args[1].lower()
-        if value_str in ["true", "on", "yes", "1"]:
+        if value_str == "status":
+            state_value = "true" if bot_config["autodelete_commands"] else "false"
+            reply = await update.message.reply_text(
+                f"ℹ️ `autodelete` is currently set to `{state_value}`.",
+                parse_mode="Markdown",
+            )
+        elif value_str in ["true", "on", "yes", "1"]:
             bot_config["autodelete_commands"] = True
             save_config()
             reply = await update.message.reply_text("✅ Auto-delete commands is now **ON**.", parse_mode="Markdown")
@@ -566,14 +579,20 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif setting in {"join_cleanup", "clean_joins", "autodelete_join_messages", "join_messages"}:
         if len(args) < 2:
             reply = await update.message.reply_text(
-                "Please specify true or false. Example: `/config join_cleanup true`",
+                "Please specify `true`, `false`, or `status`. Example: `/config join_cleanup status`",
                 parse_mode="Markdown",
             )
             schedule_delete_response(reply)
             return
 
         value_str = args[1].lower()
-        if value_str in ["true", "on", "yes", "1"]:
+        if value_str == "status":
+            state_value = "true" if bot_config.get("autodelete_join_messages") else "false"
+            reply = await update.message.reply_text(
+                f"ℹ️ `join_cleanup` is currently set to `{state_value}`.",
+                parse_mode="Markdown",
+            )
+        elif value_str in ["true", "on", "yes", "1"]:
             bot_config["autodelete_join_messages"] = True
             save_config()
             reply = await update.message.reply_text(
