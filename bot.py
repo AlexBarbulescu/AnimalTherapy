@@ -189,6 +189,20 @@ def save_config() -> None:
 def is_admin(user) -> bool:
     return user is not None and bool(user.username) and user.username.lower() in bot_config.get("admins", [])
 
+
+def log_admin_access_denied(update: Update, command_name: str) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+    logger.warning(
+        "Admin access denied for %s | user_id=%s username=%r chat_id=%s chat_type=%s configured_admins=%s",
+        command_name,
+        getattr(user, "id", None),
+        getattr(user, "username", None),
+        getattr(chat, "id", None),
+        getattr(chat, "type", None),
+        bot_config.get("admins", []),
+    )
+
 def is_allowed_chat(chat) -> bool:
     if not chat:
         return False
@@ -279,6 +293,7 @@ async def clean_joins_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await auto_delete_command(update, context)
 
     if not is_admin(update.effective_user):
+        log_admin_access_denied(update, "/clean_joins")
         await update.message.reply_text("⛔ You are not authorized to use this command.")
         return
 
@@ -316,6 +331,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await auto_delete_command(update, context)
 
     if not is_admin(update.effective_user):
+        log_admin_access_denied(update, "/admin")
         await update.message.reply_text("⛔ You are not authorized to use this command.")
         return
 
@@ -335,6 +351,7 @@ async def purge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if not is_admin(update.effective_user):
+        log_admin_access_denied(update, "/purge")
         await update.message.reply_text("⛔ You are not authorized to use this command.")
         return
 
@@ -401,6 +418,7 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await auto_delete_command(update, context)
 
     if not is_admin(update.effective_user):
+        log_admin_access_denied(update, "/config")
         await update.message.reply_text("⛔ You are not authorized to use this command.")
         return
 
