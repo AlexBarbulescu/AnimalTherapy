@@ -5,6 +5,7 @@ import logging
 from dotenv import load_dotenv
 from groq import AsyncGroq
 from telegram import Update
+from telegram.error import BadRequest, Conflict
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 load_dotenv()
@@ -16,6 +17,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PROJECT_DOCS = os.getenv("PROJECT_DOCS", "")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
+POST_STARTUP_MESSAGE = os.getenv("POST_STARTUP_MESSAGE", "false").lower() in {"1", "true", "yes", "on"}
 
 client = AsyncGroq(api_key=GROQ_API_KEY)
 
@@ -80,6 +82,18 @@ def build_unknown_answer(user_message: str) -> str:
     if question_requests_quantitative_info(user_message):
         return "I don't have verified figures for that in the provided project docs, so I don't want to guess."
     return "I don't have verified information about that in the provided project docs."
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    error = context.error
+    if isinstance(error, Conflict):
+        logger.error(
+            "Telegram polling conflict: another bot instance is already using this token. "
+            "Stop the local bot or any duplicate Railway deployment, and ensure only one replica is running."
+        )
+        return
+
+    logger.exception("Unhandled Telegram error", exc_info=error)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
@@ -182,13 +196,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text("Sorry, error occurred. Try again.")
 
 async def post_init(application: Application) -> None:
-    if GROUP_CHAT_ID:
+    if POST_STARTUP_MESSAGE and GROUP_CHAT_ID:
         try:
             await application.bot.send_message(
                 chat_id=int(GROUP_CHAT_ID),
                 text="🐾 I'm active and ready to help!"
             )
             logger.info("Startup message posted to group")
+        except BadRequest as e:
+            logger.warning(
+                "Startup message skipped: Telegram could not find GROUP_CHAT_ID=%s. "
+                "Update the Railway env var to the correct Bot API chat id (usually starts with -100). Error: %s",
+                GROUP_CHAT_ID,
+                e,
+            )
         except Exception as e:
             logger.error(f"Failed to post startup message: {e}")
 
@@ -200,13 +221,14 @@ def main() -> None:
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.post_init = post_init
+    application.add_error_handler(error_handler)
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.PRIVATE | filters.ChatType.GROUPS), handle_message))
     
     logger.info("Starting Animal AI Bot...")
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
