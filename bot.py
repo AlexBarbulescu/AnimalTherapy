@@ -2,17 +2,24 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import openai
+import google.generativeai as genai
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PROJECT_DOCS = os.getenv("PROJECT_DOCS", "")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
-openai.api_key = OPENAI_API_KEY
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction=f"""You are a helpful assistant for Animal AI, a crypto project focused on DeFi and animal charity.
+Use this documentation: {PROJECT_DOCS}
+
+Be concise and helpful."""
+)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
@@ -34,22 +41,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         
-        system_prompt = f"""You are a helpful assistant for Animal AI, a crypto project focused on DeFi and animal charity.
-Use this documentation: {PROJECT_DOCS}
-
-Be concise and helpful."""
-        
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            max_tokens=500,
-            temperature=0.7
-        )
-        
-        answer = response.choices[0].message.content
+        response = model.generate_content(user_message)
+        answer = response.text
         await update.message.reply_text(answer)
     except Exception as e:
         logger.error(f"Error: {e}")
